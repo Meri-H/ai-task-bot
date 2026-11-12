@@ -1,0 +1,88 @@
+x-backend: &backend
+  build: ./backend
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql+asyncpg://taskbot:${POSTGRES_PASSWORD:-taskbot}@postgres:5432/taskbot
+    REDIS_URL: redis://redis:6379/0
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: taskbot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-taskbot}
+      POSTGRES_DB: taskbot
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskbot -d taskbot"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]  # queued jobs survive a restart
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # REST API + WebSocket. Applies database migrations on start; bot and worker wait for it.
+  api:
+    <<: *backend
+    command: sh -c "alembic upgrade head && uvicorn app.api.main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://localhost:8000/api/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # CPU voice jobs; new notifications have their own queue and worker below.
+  worker:
+    <<: *backend
+    command: arq app.worker.settings.WorkerSettings
+    volumes:
+      - whisper-models:/models  # local Whisper model is downloaded once and reused
+    depends_on:
+      api: {condition: service_healthy}
+
+  # Independent notification delivery, with no Whisper dependency or model warmup.
+  notifications:
+    <<: *backend
+    build:
+      context: ./backend
+      args:
+        INSTALL_LOCAL_WHISPER: "false"
+    command: arq app.worker.settings.NotificationWorkerSettings
+    depends_on:
+      api: {condition: service_healthy}
+
+  # Telegram long-polling. Thin: stores text tasks, acknowledges voice and enqueues it.
+  bot:
+    <<: *backend
+    command: python -m app.bot.main
+    depends_on:
+      api: {condition: service_healthy}
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "${DASHBOARD_PORT:-3000}:80"
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  whisper-models:

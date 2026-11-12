@@ -1,0 +1,13 @@
+.idea/
+*.log
+test-log.txt
+.env
+__pycache__/
+*.pyc
+.venv/
+node_modules/
+dist/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+/ai-task-bot/

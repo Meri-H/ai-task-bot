@@ -1,0 +1,34 @@
+# A separate project and ephemeral data: never use the application database for tests.
+services:
+  postgres-test:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: taskbot
+      POSTGRES_PASSWORD: taskbot
+      POSTGRES_DB: taskbot_test
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U taskbot -d taskbot_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/postgresql/data
+  redis-test:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  tests:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.test
+    environment:
+      TEST_DATABASE_URL: postgresql+asyncpg://taskbot:taskbot@postgres-test:5432/taskbot_test
+      TEST_REDIS_URL: redis://redis-test:6379/15
+      REQUIRE_INTEGRATION_TESTS: "true"
+      E2E_STARTUP_TIMEOUT_SECONDS: "90"
+    depends_on:
+      postgres-test: {condition: service_healthy}
+      redis-test: {condition: service_healthy}
